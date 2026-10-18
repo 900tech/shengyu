@@ -112,7 +112,7 @@ test('新版本挂到同名原曲，而不是第一条作品', () => {
   assert.equal(works[0].name, '新歌试听');
 });
 
-test('导出方案与发行物料不写音频、不超简介长度', () => {
+test('导出方案默认未落盘，确认字节后才标记已写入', () => {
   const preset = library.EXPORT_PRESETS[0];
   const plan = library.buildExportPlan({
     preset,
@@ -130,8 +130,22 @@ test('导出方案与发行物料不写音频、不超简介长度', () => {
   assert.ok(materials.tags.length >= 3 && materials.tags.length <= 5);
   const report = library.chartReport('week');
   assert.equal(report.networked, false);
-  assert.equal(report.weights.qishui, 0.7);
-  assert.equal(dict.assertKey(report.key), report.key);
+  assert.equal(report.ok, false);
+  assert.equal(report.fake, false);
+  assert.equal(report.weights.apple, 0.7);
+  assert.equal(report.key, null);
+  const written = library.buildExportPlan({
+    preset,
+    cleanConfig: clean.createCleanConfig(),
+    metadata: { artist: '青屿', album: '独立作品集', copyright: '保留所有权利' },
+    workName: '月下归舟',
+    fileWritten: true,
+    fileName: '月下归舟.wav',
+    byteLength: 1000
+  });
+  assert.equal(written.fileWritten, true);
+  assert.equal(written.format, 'WAV');
+  assert.equal(written.fileName, '月下归舟.wav');
 });
 
 test('重合度对相同歌词给出高分', () => {

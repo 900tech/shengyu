@@ -100,6 +100,19 @@ async function run() {
     await page.click('[data-nav="templates"]');
     await page.waitForSelector('[data-library-tab="creation"]');
     await page.screenshot({ path: path.join(shots, 'templates.png') });
+    await page.click('[data-nav="dashboard"]');
+    await page.click('[data-open-trend]');
+    await page.waitForFunction(() => document.body.innerText.includes('尚未抓到榜单'), { timeout: 4000 });
+    const trendText = await page.evaluate(() => document.body.innerText);
+    assert(!trendText.includes('本地样例'), '榜单不应再显示本地样例');
+    await page.screenshot({ path: path.join(shots, 'charts-empty.png') });
+
+    await page.click('[data-nav="audio"]');
+    await page.click('[data-audio-tab="create"]');
+    await page.waitForSelector('[data-rewrite-lyric]');
+    await page.click('[data-rewrite-lyric]');
+    await page.waitForFunction(() => document.body.innerText.includes('本地词典'), { timeout: 3000 });
+
     await page.click('[data-nav="settings"]');
     await page.click('[data-theme-set="dark"]');
     const theme = await page.evaluate(() => document.documentElement.dataset.theme);

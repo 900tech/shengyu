@@ -12,7 +12,7 @@ const fmtDuration = (seconds) => {
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 };
 
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 const STEP_NAMES = ['音频分析', '人声分离', '节拍对齐', '自动混缩', '元数据清洗'];
 const LYRICS = [
   ['夜航', '夜色把江面收好，鼓点只在船舷轻敲。'],
@@ -44,7 +44,7 @@ function freshState() {
     libraryTab: 'accompaniment',
     settingsTab: 'general',
     remoteMode: 'manual',
-    agentConnected: true,
+    agentConnected: false,
     advancedOpen: false,
     filtersOpen: false,
     historyOpen: false,
@@ -95,6 +95,16 @@ function freshState() {
     bpmMax: 180,
     activeCreationId: '',
     chartRange: 'week',
+    chartStatus: 'idle',
+    chartEntries: [],
+    chartError: '',
+    chartFetchedAt: '',
+    chartNote: '',
+    chartStyle: '全部',
+    chartEndpoint: '',
+    statusEndpoint: '',
+    lyricSeed: '山色落入杯中月',
+    lyricDraft: null,
     lastPayload: null,
     remixProgress: null,
     preview: null,
@@ -131,6 +141,8 @@ state.taskControl = 'run';
 state.pendingAction = null;
 let past = [];
 let future = [];
+const pcmStore = new Map();
+const wavStore = new Map();
 let player = null;
 let previewTimer = null;
 let stepTimer = null;
@@ -311,20 +323,25 @@ function paramsText(params) {
 }
 
 function renderDashboard() {
-  if (state.dashView === 'trend') return renderTrend();
+  if (state.dashView === 'trend') {
+    renderTrend();
+    if (state.chartStatus === 'idle') refreshCharts();
+    return;
+  }
   const recent = state.audit.slice(0, 4);
   const rows = recent.length ? recent.map((item) => taskRow(item.action, `${item.result} · ${item.detail || '已记入本机日志'}`, item.result === '已拦截' ? 'warn' : '完成', item.at.slice(11, 16))).join('') : state.works.slice(0, 3).map((work) => taskRow(work.versions[0]?.name || work.name, work.versions[0]?.type || work.style, '完成', work.updated)).join('');
   const templateCount = state.templates.length;
-  mount(`<section class="hero-strip"><div class="hero-left"><p class="eyebrow">LOCAL WORKFLOW / ${esc(todayLabel())}</p><h2>让灵感在本地，完整抵达听众。</h2><p>榜单样例可拆解 · 核心资产不离开这台设备 · 外部调用成本 ¥0.00</p><div class="hero-actions"><button class="btn primary" data-audio-tab="create">${icon('spark')}开始创作</button><button class="btn" data-open-trend>查看趋势</button></div></div><div class="hero-meter"><div class="meter-ring"><span>82<small>趋势指数</small></span></div><div class="meter-copy"><b>国风电子热度上升</b><span>热门区间 130.0–136.0 BPM</span><span>副歌前置占比 68%</span><span>汽水音乐权重 70%</span></div></div></section>
+  const chartCount = state.chartEntries.length;
+  mount(`<section class="hero-strip"><div class="hero-left"><p class="eyebrow">LOCAL WORKFLOW / ${esc(todayLabel())}</p><h2>让灵感在本地，完整抵达听众。</h2><p>公开榜单只拉文本 · 音频在本机生成并播放 · 外部调用成本 ¥0.00</p><div class="hero-actions"><button class="btn primary" data-audio-tab="create">${icon('spark')}开始创作</button><button class="btn" data-open-trend>查看趋势</button></div></div><div class="hero-meter"><div class="meter-ring"><span>${chartCount || '—'}<small>${chartCount ? '已抓曲目' : '尚未抓取'}</small></span></div><div class="meter-copy"><b>${chartCount ? '榜单来自公开接口' : '榜单尚未抓取'}</b><span>Apple Music 为主，Deezer 为补充</span><span>汽水 / 网易云没有公开接口</span><span>失败时不会填入样例</span></div></div></section>
     <div class="section-head"><div><h3>快速开始</h3><p>两次点击内抵达核心操作</p></div></div>
     <section class="quick-grid">
-      ${quickCard('01', 'upload', '上传音频并处理', '在本机预检格式、时长和占位 BPM', '上传音频', 'upload')}
-      ${quickCard('02', 'spark', '一键生成 Remix', '选择模板后批量生成版本方案', '选择模板', 'remix')}
-      ${quickCard('03', 'shield', '元数据清洗重写', '三层清洗与个人模板共用一套规则', '开始清洗', 'clean')}
+      ${quickCard('01', 'upload', '上传音频并处理', '在本机读取波形，估算 BPM 和调性', '上传音频', 'upload')}
+      ${quickCard('02', 'spark', '一键生成 Remix', '按模板生成可播放的本地版本', '选择模板', 'remix')}
+      ${quickCard('03', 'shield', '元数据清洗重写', '三层清洗后写成可播放的 WAV', '开始清洗', 'clean')}
       ${quickCard('04', 'command', '查看远程指令', '只审核纯文本指令，文件不会上传', `查看 ${state.pending.length} 条待确认`, 'remote')}
     </section>
     <div class="section-head"><div><h3>最近处理</h3><p>本地操作和远程指令都写在同一本日志里</p></div><button data-nav="works">查看全部</button></div>
-    <section class="dash-columns"><div class="card list-card">${rows}</div><div class="card trend-card"><div class="trend-top"><h3>七日风格热度</h3><b>+18.4%</b></div><div class="bars">${[38, 51, 44, 63, 58, 74, 89].map((height, index) => `<i class="${index === 6 ? 'hot' : ''}" style="height:${height}%"></i>`).join('')}</div><div class="bar-labels"><span>上上周</span><span>本周</span></div><div class="trend-foot"><span>增长最快</span><b>国风电子 · 132.0 BPM</b></div></div></section>
+    <section class="dash-columns"><div class="card list-card">${rows}</div><div class="card trend-card"><div class="trend-top"><h3>公开榜单</h3><b>${chartCount ? `${chartCount} 首` : '空'}</b></div><div class="bars">${chartBars()}</div><div class="bar-labels"><span>未抓取时这里是空的</span><span>不是样例</span></div><div class="trend-foot"><span>${state.agentConnected ? '状态地址已响应' : '远程未连接'}</span><b>${chartCount ? '点趋势查看曲目' : '点趋势开始抓取'}</b></div></div></section>
     <section class="stats-row"><div class="stat"><b>${templateCount}</b><small>模板数</small></div><div class="stat"><b>${state.works.length}</b><small>作品数</small></div><div class="stat"><b>¥${state.cost || '0.00'}</b><small>累计成本</small></div></section>`);
 }
 function quickCard(no, glyph, title, desc, button, tab) {
@@ -336,11 +353,25 @@ function taskRow(name, desc, status, time) {
   const tone = status === 'warn' ? 'warn' : status === 'run' ? 'run' : '';
   return `<div class="task-row"><div class="task-main"><i class="${tone}"></i><span><b>${esc(name)}</b><small>${esc(desc)}</small></span></div><time>${esc(time)}</time></div>`;
 }
+function chartBars() {
+  const summary = SY.summarize(state.chartEntries, state.chartRange);
+  if (!summary.ok) return '<p class="sync-line">尚未抓到榜单</p>';
+  const max = Math.max(1, ...Object.values(summary.counts));
+  return SY.DICT.styles.map((style) => `<i class="${summary.counts[style] === max ? 'hot' : ''}" style="height:${Math.max(8, Math.round(summary.counts[style] / max * 100))}%" title="${esc(style)} ${summary.counts[style]}"></i>`).join('');
+}
 function renderTrend() {
-  const report = SY.chartReport(state.chartRange);
-  mount(`<div class="page-intro"><div><h2>爆款拆解</h2><p>只使用本地公开文本样例，不联网，也不下载音频</p></div><div class="intro-actions"><div class="segmented"><button class="seg-btn ${state.chartRange === 'week' ? 'active' : ''}" data-chart-range="week">按周</button><button class="seg-btn ${state.chartRange === 'month' ? 'active' : ''}" data-chart-range="month">按月</button></div><button class="btn" data-dash-home>返回控制台</button></div></div>
-    <section class="chart-grid"><article class="card status-card"><small>汽水音乐</small><b>70%</b></article><article class="card status-card"><small>网易云音乐</small><b>30%</b></article><article class="card status-card"><small>${esc(report.range)}热度</small><b>+${report.trendDelta}</b></article></section>
-    <section class="chart-layout" style="margin-top:12px"><article class="card clean-card"><h3>可复用特征</h3><p>${esc(report.advice)}</p><div class="detail-grid"><div class="detail-box"><small>热门 BPM</small><b>${report.bpm[0].toFixed(1)}–${report.bpm[1].toFixed(1)}</b></div><div class="detail-box"><small>峰值</small><b>${SY.formatBpmText(report.bpmPeak)}</b></div><div class="detail-box"><small>调性</small><b>${esc(report.keys.join(' / '))}</b></div><div class="detail-box"><small>时长</small><b>${esc(report.duration)}</b></div><div class="detail-box"><small>结构</small><b>${esc(report.structure)}</b></div><div class="detail-box"><small>高潮</small><b>${esc(report.hookAt)}</b></div></div><div class="dict-pills" style="margin-top:14px">${report.keywords.map((item) => `<span class="tag">${esc(item)}</span>`).join('')}${report.tags.map((item) => `<span class="tag gold">${esc(item)}</span>`).join('')}</div></article><aside class="card clean-card"><h3>保存到创作模板</h3><p>会锁定 BPM、调性和风格边界，供创作中心直接使用。</p><div class="security-note">${icon('shield')}数据只写进本机模板库。</div><button class="btn primary block large" style="margin-top:16px" data-save-trend>${icon('plus')}保存为创作模板</button></aside></section>`);
+  const summary = SY.summarize(state.chartEntries, state.chartRange);
+  const visible = SY.filterByStyle(state.chartEntries, state.chartStyle);
+  const rows = state.chartStatus === 'loading'
+    ? '<div class="card empty"><p>正在抓取公开榜单，只读取曲名、艺人和曲风。</p></div>'
+    : visible.length
+      ? `<div class="chart-list">${visible.map((item, index) => `<article class="chart-row"><b>${item.rank}</b><div><b>${esc(item.title)}</b><p>${esc(item.artist)} · ${esc(item.source)}${item.released ? ` · ${esc(item.released)}` : ''}${item.duration ? ` · ${fmtDuration(item.duration)}` : ''}</p><div class="lib-meta">${item.genres.map((genre) => `<span class="tag">${esc(genre)}</span>`).join('')}${item.style ? `<span class="tag gold">${esc(item.style)}</span>` : '<span class="tag">未映射风格</span>'}</div></div><button class="btn" data-clone-entry="${index}">一键复刻</button></article>`).join('')}</div>`
+      : `<div class="card empty"><p>${esc(state.chartError || summary.message || '尚未抓到榜单')}</p></div>`;
+  mount(`<div class="page-intro"><div><h2>公开榜单</h2><p>只抓取曲名、艺人、曲风和排名。不下载音频。汽水音乐和网易云没有可合法调用的公开接口，所以这里不会冒充那两家的数据。</p></div><div class="intro-actions"><button class="btn primary" data-refresh-charts ${state.chartStatus === 'loading' ? 'disabled' : ''}>${state.chartStatus === 'loading' ? '抓取中' : '抓取榜单'}</button><button class="btn" data-dash-home>返回控制台</button></div></div>
+    <section class="chart-grid"><article class="card status-card"><small>Apple Music</small><b>主榜</b></article><article class="card status-card"><small>Deezer</small><b>补充</b></article><article class="card status-card"><small>本次曲目</small><b>${state.chartEntries.length}</b></article></section>
+    <section class="card clean-card" style="margin-top:12px"><div class="field"><label>可选的 HTTPS JSON 榜单</label><input class="input" id="chartEndpoint" value="${esc(state.chartEndpoint)}" placeholder="留空则只用 Apple 与 Deezer"></div><p class="sync-line">${esc(state.chartNote || '无密钥也能抓默认两家。自定义地址需要你自己有权访问。')}${state.chartFetchedAt ? ` 最近一次：${esc(state.chartFetchedAt.slice(0, 16).replace('T', ' '))}` : ''}</p></section>
+    <div class="style-tabs" style="margin-top:12px">${['全部', ...SY.DICT.styles].map((item) => `<button class="style-tab ${state.chartStyle === item ? 'active' : ''}" data-chart-style="${item}">${item}</button>`).join('')}</div>
+    <section class="chart-layout" style="margin-top:12px"><article class="card clean-card"><h3>${state.chartStyle === '全部' ? '全部曲目' : esc(state.chartStyle)}</h3><p>${visible.length ? `当前筛选 ${visible.length} 首。未映射的歌只出现在「全部」。` : '这个风格下没有曲目。不会拿其他歌来充数。'}</p>${rows}<div class="dict-pills" style="margin-top:14px">${summary.keywords.map((item) => `<span class="tag">${esc(item)}</span>`).join('')}</div></article><aside class="card clean-card"><h3>保存到创作模板</h3><p>榜单不含 BPM 和调性。保存时使用你选中的风格预设，并标明不是从原曲检测出来的。</p><div class="field"><label>套用风格</label><select class="select" id="trendStyle">${SY.DICT.styles.map((item) => `<option ${state.poetry.style === item ? 'selected' : ''}>${item}</option>`).join('')}</select></div><div class="security-note">${icon('shield')}只把文本特征写进本机模板，不保存音频地址。</div><button class="btn primary block large" style="margin-top:16px" data-save-trend ${summary.ok ? '' : 'disabled'}>${icon('plus')}保存为创作模板</button></aside></section>`);
 }
 
 function audioShell(content) {
@@ -355,9 +386,9 @@ function renderAudio() {
   if (state.audioTab === 'remix') paintProgress();
 }
 function renderUpload() {
-  const rows = state.uploaded.map((file, index) => `<tr><td><div class="file-name"><span class="file-glyph">${icon('wave')}</span><span><b>${esc(file.name)}</b><small>${fmtSize(file.size)} · ${file.engine === 'stub' ? 'BPM 为预检占位' : '示例'}</small></span></div><div class="wave-play"><button class="btn" data-play-file="${index}">${icon('play')}播放确认</button><div class="wave-mini">${waveBars(16)}</div></div></td><td>${esc(file.duration || '时长待确认')}</td><td>${esc(file.format)}</td><td>${SY.formatBpmText(file.bpm)}</td><td>${esc(file.key)}</td><td><span class="status ${file.status === '预检中' ? 'run' : 'ok'}">${esc(file.status || '预检完成')}</span></td><td><button class="btn ghost" data-use-file="${index}">进入 Remix</button></td></tr>`).join('');
+  const rows = state.uploaded.map((file, index) => `<tr><td><div class="file-name"><span class="file-glyph">${icon('wave')}</span><span><b>${esc(file.name)}</b><small>${fmtSize(file.size)} · ${file.engine === 'local' ? '已读波形' : '没能读出波形'}</small></span></div><div class="wave-play"><button class="btn" data-play-file="${index}">${icon('play')}播放确认</button><div class="wave-mini">${waveBars(16)}</div></div></td><td>${esc(file.duration || '时长待确认')}</td><td>${esc(file.format)}</td><td>${SY.formatBpmText(file.bpm)}</td><td>${esc(file.key)}</td><td><span class="status ${file.status === '预检中' ? 'run' : file.engine === 'local' ? 'ok' : 'warn'}">${esc(file.status || '预检完成')}</span></td><td><button class="btn ghost" data-use-file="${index}">进入 Remix</button></td></tr>`).join('');
   return `<section class="drop-zone" id="dropZone"><div><div class="upload-orb">${icon('upload')}</div><h3>拖入音频文件，或点击选择本地文件</h3><p>文件只在当前设备读取，不会上传</p><button class="btn primary" data-pick-file>选择本地文件</button><div class="drop-formats">MP3 · WAV · FLAC · M4A</div></div></section>
-    <div class="section-head"><div><h3>待处理文件</h3><p>${state.uploaded.length ? `${state.uploaded.length} 个文件已在本机预检，检测引擎尚未接入` : '导入后显示文件名、时长、格式和占位分析'}</p></div>${state.uploaded.length ? '<button data-clear-files>清空列表</button>' : ''}</div>
+    <div class="section-head"><div><h3>待处理文件</h3><p>${state.uploaded.length ? `${state.uploaded.length} 个文件已在本机读取波形` : '导入后会播放原文件，并估算 BPM 与调性'}</p></div>${state.uploaded.length ? '<button data-clear-files>清空列表</button>' : ''}</div>
     <section class="card table-wrap">${state.uploaded.length ? `<table class="file-table"><thead><tr><th>文件</th><th>时长</th><th>格式</th><th>BPM</th><th>调性</th><th>状态</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table>` : `<div class="empty">${icon('wave')}<p>还没有本地音频</p></div>`}</section>`;
 }
 function bindDropZone() {
@@ -376,6 +407,20 @@ function readDuration(url) {
     audio.src = url;
   });
 }
+async function decodeUpload(file) {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  if (SY.isWav(bytes)) return SY.decodeWav(bytes);
+  const context = new AudioContext();
+  try {
+    const decoded = await context.decodeAudioData(buffer.slice(0));
+    return SY.downmixAudioBuffer(decoded);
+  } catch {
+    return null;
+  } finally {
+    context.close();
+  }
+}
 async function handleFiles(fileList) {
   const valid = ['mp3', 'wav', 'flac', 'm4a'];
   const files = [...fileList].filter((file) => valid.includes((file.name.split('.').pop() || '').toLowerCase()));
@@ -383,12 +428,26 @@ async function handleFiles(fileList) {
   if (state.pickerMode === 'template') return importTemplates(files);
   remember();
   for (const file of files) {
-    const guessed = SY.stubAnalyze(file.name, file.size);
-    const item = { id: uid(), name: file.name, size: file.size, format: file.name.split('.').pop().toUpperCase(), bpm: guessed.bpm, key: guessed.key, style: guessed.style, duration: '', url: URL.createObjectURL(file), status: '预检中', engine: 'stub' };
+    const item = { id: uid(), name: file.name, size: file.size, format: file.name.split('.').pop().toUpperCase(), bpm: 120, key: 'C 大调', style: '国风DJ', duration: '', url: URL.createObjectURL(file), status: '预检中', engine: 'stub' };
     state.uploaded.unshift(item);
     rerender();
+    const pcm = await decodeUpload(file);
     item.duration = fmtDuration(await readDuration(item.url));
-    item.status = '预检完成';
+    if (pcm?.samples?.length) {
+      const analysis = SY.analyzePcm(pcm.samples, pcm.sampleRate);
+      pcmStore.set(item.id, pcm);
+      item.bpm = analysis.bpm;
+      item.key = analysis.key;
+      item.engine = 'local';
+      item.status = analysis.audible ? '可以处理' : '波形过小';
+    } else {
+      const guessed = SY.stubAnalyze(file.name, file.size);
+      item.bpm = guessed.bpm;
+      item.key = guessed.key;
+      item.style = guessed.style;
+      item.engine = 'stub';
+      item.status = '未能读取波形';
+    }
   }
   audit('local', '导入音频', `${files.length} 个文件完成预检`, '已完成');
   addTask(`预检 ${files.length} 个音频`, 900);
@@ -412,9 +471,9 @@ function renderCreate() {
     const ratio = Math.round(overlapAgainst(demo.lyric, demo.title) * 100);
     const warned = ratio >= state.overlapThreshold;
     const choice = state.demoChoices[demo.id] || '';
-    return `<article class="card demo-card ${choice}"><div class="demo-card-top"><div><h3>${esc(demo.label)}</h3><span class="status ${warned ? 'warn' : 'ok'}">${warned ? `重合度 ${ratio}% · 请改写` : `重合度 ${ratio}% · 通过`}</span></div><span class="score">${demo.score}</span></div><p class="lyric">${esc(demo.lyric)}</p><div class="demo-tags"><span class="tag gold">${esc(demo.style)}</span><span class="tag">${SY.formatBpmText(demo.bpm)} BPM</span><span class="tag">${esc(demo.key)}</span></div><div class="demo-actions"><button class="btn ${choice === 'rejected' ? 'danger' : ''}" data-demo-choice="rejected" data-id="${demo.id}">${icon('x')}淘汰</button><button class="btn ${choice === 'chosen' ? 'primary' : ''}" data-demo-choice="chosen" data-id="${demo.id}">${icon('check')}入选</button></div></article>`;
+    return `<article class="card demo-card ${choice}"><div class="demo-card-top"><div><h3>${esc(demo.label)}</h3><span class="status ${warned ? 'warn' : 'ok'}">${warned ? `重合度 ${ratio}% · 请改写` : `重合度 ${ratio}% · 通过`}</span></div><span class="score">${demo.score}</span></div><p class="lyric">${esc(demo.lyric)}</p><div class="demo-tags"><span class="tag gold">${esc(demo.style)}</span><span class="tag">${SY.formatBpmText(demo.bpm)} BPM</span><span class="tag">${esc(demo.key)}</span></div><div class="demo-actions"><button class="btn" data-play-demo="${demo.id}">${icon('play')}播放</button><button class="btn ${choice === 'rejected' ? 'danger' : ''}" data-demo-choice="rejected" data-id="${demo.id}">${icon('x')}淘汰</button><button class="btn ${choice === 'chosen' ? 'primary' : ''}" data-demo-choice="chosen" data-id="${demo.id}">${icon('check')}入选</button></div></article>`;
   }).join('');
-  return `<section class="create-layout"><aside class="card create-controls"><h3>国风诗词模式</h3><div class="field"><label>诗词素材</label><select class="select" id="poetrySource">${['唐诗意象精选', '宋词婉约意象', '边塞与山河主题'].map((item) => `<option ${state.poetry.source === item ? 'selected' : ''}>${item}</option>`).join('')}</select></div><div class="range-row"><div><span>文言密度</span><output id="densityOut">${state.poetry.density}%</output></div><input id="density" type="range" min="20" max="90" value="${state.poetry.density}"></div><div class="field"><label>风格边界</label><select class="select" id="poetryStyle">${SY.DICT.styles.map((item) => `<option ${state.poetry.style === item ? 'selected' : ''}>${item}</option>`).join('')}</select></div><div class="field" style="margin-top:13px"><label>批量数量</label><select class="select" id="poetryCount">${[4, 8, 12].map((item) => `<option value="${item}" ${Number(state.poetry.count) === item ? 'selected' : ''}>${item} 条 Demo</option>`).join('')}</select></div>${active ? `<div class="security-note" style="margin-top:16px">${icon('spark')}对标「${esc(active.name)}」· ${SY.formatBpmText(active.bpm)} BPM · ${esc(active.key)}</div>` : `<div class="security-note" style="margin-top:16px">${icon('shield')}生成时对照已有歌词做重合度检查。</div>`}<button class="btn primary block" data-generate-demos>${icon('spark')}批量生成</button></aside><div><div class="section-head" style="margin-top:0"><div><h3>本轮候选</h3><p>直接在卡片上入选或淘汰</p></div></div><div class="demo-grid">${cards}</div><div class="bottom-bar"><span class="sync-line">超过 ${state.overlapThreshold}% 会标黄，不会上传歌词。</span><div style="display:flex;gap:8px"><button class="btn" data-more-demos>生成更多</button><button class="btn primary" data-export-demos>${icon('download')}批量导出</button></div></div></div></section>`;
+  return `<section class="create-layout"><aside class="card create-controls"><h3>国风诗词模式</h3><div class="field"><label>诗词素材</label><select class="select" id="poetrySource">${['唐诗意象精选', '宋词婉约意象', '边塞与山河主题'].map((item) => `<option ${state.poetry.source === item ? 'selected' : ''}>${item}</option>`).join('')}</select></div><div class="range-row"><div><span>文言密度</span><output id="densityOut">${state.poetry.density}%</output></div><input id="density" type="range" min="20" max="90" value="${state.poetry.density}"></div><div class="field"><label>风格边界</label><select class="select" id="poetryStyle">${SY.DICT.styles.map((item) => `<option ${state.poetry.style === item ? 'selected' : ''}>${item}</option>`).join('')}</select></div><div class="field" style="margin-top:13px"><label>批量数量</label><select class="select" id="poetryCount">${[4, 8, 12].map((item) => `<option value="${item}" ${Number(state.poetry.count) === item ? 'selected' : ''}>${item} 条 Demo</option>`).join('')}</select></div>${active ? `<div class="security-note" style="margin-top:16px">${icon('spark')}对标「${esc(active.name)}」· ${SY.formatBpmText(active.bpm)} BPM · ${esc(active.key)}</div>` : `<div class="security-note" style="margin-top:16px">${icon('shield')}生成时对照已有歌词做重合度检查。</div>`}<h3 style="margin-top:18px">歌词仿写</h3><p class="sync-line">用本机词典改写，不调用付费模型。</p><textarea class="lyric-box" id="lyricSeed">${esc(state.lyricSeed)}</textarea><div class="inline-actions"><button class="btn" data-rewrite-lyric>仿写</button><button class="btn" data-export-lyric ${state.lyricDraft ? '' : 'disabled'}>导出歌词</button><button class="btn primary" data-accept-lyric ${state.lyricDraft ? '' : 'disabled'}>写入作品</button></div>${state.lyricDraft ? `<p class="lyric">${esc(state.lyricDraft.text)}</p><p class="sync-line">重合度 ${state.lyricDraft.overlap}% · 本地词典</p>` : ''}<button class="btn primary block" data-generate-demos>${icon('spark')}批量生成</button></aside><div><div class="section-head" style="margin-top:0"><div><h3>本轮候选</h3><p>直接在卡片上入选或淘汰</p></div></div><div class="demo-grid">${cards}</div><div class="bottom-bar"><span class="sync-line">超过 ${state.overlapThreshold}% 会标黄，不会上传歌词。</span><div style="display:flex;gap:8px"><button class="btn" data-more-demos>生成更多</button><button class="btn primary" data-export-demos>${icon('download')}批量导出</button></div></div></div></section>`;
 }
 function generateDemos() {
   remember();
@@ -443,7 +502,7 @@ function generateDemos() {
   state.audioTab = 'create';
   rerender();
 }
-function chooseDemo(id, choice) {
+async function chooseDemo(id, choice) {
   const demo = state.demos.find((item) => item.id === id);
   if (!demo) return;
   remember();
@@ -452,16 +511,21 @@ function chooseDemo(id, choice) {
     state.works = state.works.filter((work) => work.versions.length);
     demo.versionId = '';
   }
-  if (choice === 'chosen') ensureDemoVersion(demo);
+  if (choice === 'chosen') await ensureDemoVersion(demo);
   state.demoChoices[id] = choice;
   audit('local', choice === 'chosen' ? '入选 Demo' : '淘汰 Demo', demo.title, '已完成');
   toast(choice === 'chosen' ? '已入选，并挂到版本树' : '已淘汰', demo.title);
   rerender();
 }
-function ensureDemoVersion(demo) {
+async function ensureDemoVersion(demo) {
   if (demo.versionId && state.works.some((work) => work.versions.some((version) => version.id === demo.versionId))) return;
+  if (!(await bytesFor(demo.audioId))) {
+    const made = await materialize({ bpm: demo.bpm, key: demo.key, style: demo.style, seconds: 12 });
+    demo.audioId = made.audioId;
+  }
   const version = {
     id: uid(),
+    audioId: demo.audioId,
     name: SY.versionDisplayName(demo.title, '初稿Demo'),
     type: '初稿Demo',
     time: `今天 ${nowTime()}`,
@@ -481,9 +545,9 @@ function renderRemix() {
   const selected = selectedTemplateObjects();
   const decision = SY.exportDecision(selected.map((item) => item.license));
   const structures = SY.STRUCTURES.map((item) => `<button class="style-tab ${state.structureId === item.id ? 'active' : ''}" data-structure="${item.id}">${item.name}</button>`).join('');
-  return `<section class="remix-layout"><aside class="card source-card"><div class="album-cover"><button class="play-float" data-play-source>${icon('play')}</button></div><h3>${esc(sourceName(source))}</h3><p>${esc(source.duration || '时长待确认')} · 本地源</p><div class="wave-mini">${waveBars()}</div><div class="source-meta"><span class="tag">${SY.formatBpmText(source.bpm)} BPM</span><span class="tag">${esc(source.key)}</span></div><p class="sync-line">${source.engine === 'stub' ? 'BPM 与调性是预检占位，人声分离尚未接入。' : '示例原曲，可替换为你的本地文件。'}</p></aside>
+  return `<section class="remix-layout"><aside class="card source-card"><div class="album-cover"><button class="play-float" data-play-source>${icon('play')}</button></div><h3>${esc(sourceName(source))}</h3><p>${esc(source.duration || '时长待确认')} · 本地源</p><div class="wave-mini">${waveBars()}</div><div class="source-meta"><span class="tag">${SY.formatBpmText(source.bpm)} BPM</span><span class="tag">${esc(source.key)}</span></div><p class="sync-line">${source.engine === 'local' ? '已读取本地波形，生成时会混入风格节奏。' : source.engine === 'stub' ? '没能读出波形，将只生成风格示范。' : '还没有导入文件，将按模板生成可播放示范。'}</p></aside>
     <div class="templates-main"><div class="style-tabs">${structures}</div><div class="style-tabs">${['全部', ...SY.DICT.styles].map((item) => `<button class="style-tab ${state.styleFilter === item ? 'active' : ''}" data-style-filter="${item}">${item}</button>`).join('')}<button class="style-tab ${state.matchBpm ? 'active' : ''}" data-match-bpm>±${SY.DICT.bpmTolerance} 匹配</button></div><div class="template-grid" id="remixTemplates">${renderRemixTemplates()}</div></div>
-    <aside class="card option-card"><h3>处理选项</h3>${optionRow('align', '自动节拍对齐', '按模板节拍对齐')}${optionRow('vocal', '保留原主人声', '人声分离接口尚未接入')}${optionRow('loudness', '响度标准化', `目标 ${currentPreset().lufs} LUFS`)}${optionRow('clean', '导出前清洗元数据', cleanLine())}<div style="margin:12px 0">${selected.length ? complianceButton(decision.worst) : '<span class="status warn">还没选择模板</span>'}</div><button class="btn primary block large" data-start-remix>${icon('spark')}生成 ${selected.length} 个版本</button><p class="sync-line">生成的是版本方案，不会写出音频文件。</p></aside></section><div id="remixProgress"></div>`;
+    <aside class="card option-card"><h3>处理选项</h3>${optionRow('align', '自动节拍对齐', '按模板节拍对齐')}${optionRow('vocal', '保留原主波形', '有导入文件时混入原波形，没有神经网络分离')}${optionRow('loudness', '响度标准化', `目标 ${currentPreset().lufs} LUFS`)}${optionRow('clean', '导出前清洗元数据', cleanLine())}<div style="margin:12px 0">${selected.length ? complianceButton(decision.worst) : '<span class="status warn">还没选择模板</span>'}</div><button class="btn primary block large" data-start-remix>${icon('spark')}生成 ${selected.length} 个版本</button><p class="sync-line">每个版本都会生成可播放的 WAV。导出时再选择保存位置。</p></aside></section><div id="remixProgress"></div>`;
 }
 function optionRow(key, title, sub) {
   const checked = key === 'clean' ? state.clean.applyOnExport : state.remixOptions[key];
@@ -508,7 +572,7 @@ function beginRemix() {
   if (decision.blocked) {
     state.pendingAction = { type: 'remix' };
     const error = SY.sanitizeError(decision.worst === '未标注' ? 'missingLicense' : 'copyright');
-    openModal(`<div class="modal-icon">${icon('shield')}</div><h2>${esc(error.title)}</h2><p>${esc(error.detail)}涉及：${esc(list.filter((item) => item.license === '不可商用' || !SY.DICT.licenses.includes(item.license)).map((item) => item.name).join('、'))}。继续也只生成版本方案，不会导出音频。</p><div class="modal-actions"><button class="btn" data-modal-close>返回更换</button><button class="btn danger" data-risk-continue>知悉风险，继续</button></div>`);
+    openModal(`<div class="modal-icon">${icon('shield')}</div><h2>${esc(error.title)}</h2><p>${esc(error.detail)}涉及：${esc(list.filter((item) => item.license === '不可商用' || !SY.DICT.licenses.includes(item.license)).map((item) => item.name).join('、'))}。继续会生成本地可播放版本，导出仍要你确认保存位置。</p><div class="modal-actions"><button class="btn" data-modal-close>返回更换</button><button class="btn danger" data-risk-continue>知悉风险，继续</button></div>`);
     return;
   }
   runRemix();
@@ -527,12 +591,25 @@ function runRemix() {
     paintProgress();
     if (step >= 4) clearInterval(stepTimer);
   }, 640);
-  addTask(`Remix 方案 · ${name}`, 3200, () => {
+  addTask(`Remix · ${name}`, 900, async () => {
     remember();
-    list.forEach((template) => {
+    const source = currentSource();
+    for (const template of list) {
       const type = SY.TYPE_BY_STYLE[template.style] || template.style;
-      SY.attachVersion(state.works, name, {
+      const made = await materialize({
+        bpm: template.bpm,
+        key: template.key,
+        style: template.style,
+        seconds: 12,
+        pcmId: source.id,
+        sourceBpm: source.bpm,
+        vocal: state.remixOptions.vocal !== false,
+        clean: state.clean.applyOnExport,
+        watermark: state.clean.items['wm-weaken'] !== false
+      });
+      const version = {
         id: uid(),
+        audioId: made.audioId,
         name: SY.versionDisplayName(name, type),
         type,
         time: `今天 ${nowTime()}`,
@@ -545,15 +622,20 @@ function runRemix() {
           templateId: template.id,
           structureId: state.structureId,
           clean: state.clean.applyOnExport,
-          options: { ...state.remixOptions }
+          options: { ...state.remixOptions },
+          sourceBpm: source.bpm,
+          pcmId: source.id || ''
         }
-      });
-    });
+      };
+      const attached = SY.attachVersion(state.works, name, version);
+      state.openWorks[attached.work.id] = true;
+    }
     state.remixProgress = 5;
     paintProgress();
-    audit('local', 'Remix', `${list.length} 个版本挂到 ${name}`, '已完成');
+    audit('local', 'Remix', `${list.length} 个可播放版本挂到 ${name}`, '已完成');
     persist();
-    notify('版本树已更新', `${list.length} 个版本已挂到「${name}」`);
+    notify('版本已可播放', `${list.length} 个版本已挂到「${name}」`);
+    if (state.page === 'audio') rerender();
   });
 }
 
@@ -564,7 +646,7 @@ function renderClean() {
   const template = metaTemplate();
   return `<section class="clean-layout"><div class="card clean-card"><h3>三层清洗项目</h3><p>${esc(cleanLine())}</p>
     ${SY.LAYERS.map((layer) => cleanGroup(layer)).join('')}
-    </div><aside class="card clean-card"><h3>当前文件</h3><p>${esc(source.format || 'WAV')} · ${source.size ? fmtSize(source.size) : '示例'} · 不会改写原文件</p><div class="file-name"><span class="file-glyph">${icon('wave')}</span><span><b>${esc(source.name)}</b><small>${esc(source.status || '示例')}</small></span></div><div class="field" style="margin-top:18px"><label>元数据模板</label><select class="select" id="metaPick">${state.metadataTemplates.map((item) => `<option value="${item.id}" ${item.id === template.id ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select></div><div class="field" style="margin-top:12px"><label>艺名</label><input class="input" id="artistInput" value="${esc(template.artist)}"></div><div class="field" style="margin-top:12px"><label>专辑</label><input class="input" id="albumInput" value="${esc(template.album)}"></div><div class="field" style="margin-top:12px"><label>版权声明</label><input class="input" id="copyrightInput" value="${esc(template.copyright)}"></div><div class="option-row"><span>导出时套用这套清洗<small>与 Remix、批量导出同步</small></span><label class="toggle"><input type="checkbox" data-remix-option="clean" ${state.clean.applyOnExport ? 'checked' : ''}><i></i></label></div><div class="security-note" style="margin-top:12px">${icon('shield')}规则改一处，三个入口一起变。浏览器里只生成方案。</div><button class="btn primary block large" style="margin-top:15px" data-start-clean>${icon('shield')}清洗并导出</button><div style="margin-top:10px;text-align:center">${complianceButton(license)}</div></aside></section>`;
+    </div><aside class="card clean-card"><h3>当前文件</h3><p>${esc(source.format || 'WAV')} · ${source.size ? fmtSize(source.size) : '示例'} · 不会改写原文件</p><div class="file-name"><span class="file-glyph">${icon('wave')}</span><span><b>${esc(source.name)}</b><small>${esc(source.status || '示例')}</small></span></div><div class="field" style="margin-top:18px"><label>元数据模板</label><select class="select" id="metaPick">${state.metadataTemplates.map((item) => `<option value="${item.id}" ${item.id === template.id ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select></div><div class="field" style="margin-top:12px"><label>艺名</label><input class="input" id="artistInput" value="${esc(template.artist)}"></div><div class="field" style="margin-top:12px"><label>专辑</label><input class="input" id="albumInput" value="${esc(template.album)}"></div><div class="field" style="margin-top:12px"><label>版权声明</label><input class="input" id="copyrightInput" value="${esc(template.copyright)}"></div><div class="option-row"><span>导出时套用这套清洗<small>与 Remix、批量导出同步</small></span><label class="toggle"><input type="checkbox" data-remix-option="clean" ${state.clean.applyOnExport ? 'checked' : ''}><i></i></label></div><div class="security-note" style="margin-top:12px">${icon('shield')}规则改一处，三个入口一起变。导出会弹出保存位置，并写成可播放的 WAV。</div><button class="btn primary block large" style="margin-top:15px" data-start-clean>${icon('shield')}清洗并导出</button><div style="margin-top:10px;text-align:center">${complianceButton(license)}</div></aside></section>`;
 }
 function cleanGroup(layer) {
   const items = SY.CLEAN_ITEMS.filter((item) => item.layer === layer.id);
@@ -605,25 +687,47 @@ function beginClean() {
 function runClean() {
   closeModal();
   const name = sourceName();
-  addTask(`清洗方案 · ${name}`, 1800, () => {
+  addTask(`清洗 · ${name}`, 900, async () => {
     remember();
+    const source = currentSource();
+    const made = await materialize({
+      bpm: source.bpm,
+      key: source.key,
+      style: source.style || '国风DJ',
+      seconds: presetSeconds(),
+      pcmId: source.id,
+      sourceBpm: source.bpm,
+      vocal: true,
+      clean: true,
+      watermark: state.clean.items['wm-weaken'] !== false
+    });
+    const saved = await saveBytes(safeName(`${name}-清洗版`, 'wav'), made.wav, 'wav');
     const plan = makePlan(name);
-    SY.attachVersion(state.works, name, {
+    if (saved.ok) {
+      plan.fileWritten = true;
+      plan.fileName = saved.fileName;
+      plan.byteLength = saved.byteLength;
+      plan.note = '音频已写入所选文件';
+    }
+    const attached = SY.attachVersion(state.works, name, {
       id: uid(),
+      audioId: made.audioId,
       name: SY.versionDisplayName(name, '清洗版'),
       type: '清洗版',
       time: `今天 ${nowTime()}`,
       license: state.works.find((item) => item.name === name)?.license || '自有版权',
-      style: currentSource().style || '国风DJ',
-      bpm: SY.formatBpm(currentSource().bpm),
-      key: currentSource().key,
-      snapshot: { summary: `清洗 ${plan.cleanFingerprint} / ${plan.presetName}`, clean: plan.cleanApplied, presetId: plan.presetId },
+      style: source.style || '国风DJ',
+      bpm: SY.formatBpm(source.bpm),
+      key: source.key,
+      snapshot: { summary: `清洗 ${plan.cleanFingerprint} / ${plan.presetName}`, clean: plan.cleanApplied, presetId: plan.presetId, pcmId: source.id || '' },
       exportPlan: plan
     });
-    audit('local', '清洗', `${name} · 指纹 ${plan.cleanFingerprint}`, '已完成');
+    state.openWorks[attached.work.id] = true;
+    audit('local', '清洗', `${name} · 指纹 ${plan.cleanFingerprint}`, saved.ok ? '已完成' : '已取消保存');
     persist();
-    const error = SY.sanitizeError('engine');
-    notify(error.title, error.detail);
+    if (saved.canceled) notify('试听已生成', '保存已取消，作品库里仍可播放这一版');
+    else if (!saved.ok) notify('没有保存成功', '作品库里的试听仍然可以播放');
+    else notify('清洗版已保存', saved.fileName);
   });
 }
 
@@ -648,7 +752,7 @@ function filteredTemplates() {
 }
 function renderLibraryCards(list) {
   if (!list.length) return '<div class="card empty"><p>没有符合筛选的模板</p></div>';
-  return list.map((item, index) => `<article class="card lib-card"><div class="lib-art">${Array.from({ length: 22 }, (_, bar) => `<i style="height:${8 + (bar * 13 + index * 7) % 34}px"></i>`).join('')}</div><div class="lib-head"><div><h3>${esc(item.name)}</h3><p>${esc((item.versions || ['v1'])[0])} · ${SY.formatBpmText(item.bpm)} BPM</p></div>${complianceButton(item.license)}</div><div class="lib-meta"><span class="tag gold">${esc(item.style)}</span><span class="tag">${esc(item.key)}</span></div><div class="lib-foot"><button class="preview-btn" data-preview-template="${item.id}">${icon('play')}15 秒试听${state.preview?.templateId === item.id ? ` · ${state.preview.left}s` : ''}</button><button class="icon-btn" data-template-detail="${item.id}">${icon('more')}</button></div></article>`).join('');
+  return list.map((item, index) => `<article class="card lib-card"><div class="lib-art">${Array.from({ length: 22 }, (_, bar) => `<i style="height:${8 + (bar * 13 + index * 7) % 34}px"></i>`).join('')}</div><div class="lib-head"><div><h3>${esc(item.name)}</h3><p>${esc((item.versions || ['v1'])[0])} · ${SY.formatBpmText(item.bpm)} BPM</p></div>${complianceButton(item.license)}</div><div class="lib-meta"><span class="tag gold">${esc(item.style)}</span><span class="tag">${esc(item.key)}</span></div><div class="lib-foot"><button class="preview-btn" data-preview-template="${item.id}">${icon('play')}15 秒试听${state.preview?.templateId === item.id ? ` · ${state.preview.left}s` : ''}</button><button class="btn ghost" data-apply-template="${item.id}">应用</button><button class="icon-btn" data-template-detail="${item.id}">${icon('more')}</button></div></article>`).join('');
 }
 
 function visibleWorks() {
@@ -672,7 +776,7 @@ function renderWorks() {
     <section class="work-list">${visibleWorks().map(renderWorkCard).join('') || '<div class="card empty"><p>没有符合条件的作品</p></div>'}</section>`);
 }
 function renderWorkCard(work) {
-  return `<article class="card work-card ${state.openWorks[work.id] ? 'open' : ''}" data-work="${work.id}"><div class="work-summary" data-toggle-work="${work.id}"><input class="pick" type="checkbox" data-pick-work="${work.id}" ${state.selectedWorkIds.includes(work.id) ? 'checked' : ''}><div class="work-cover">${icon('music')}</div><div class="work-info"><h3>${esc(work.name)}</h3><p>${work.versions.length} 个版本 · ${SY.formatBpmText(work.bpm)} BPM · ${esc(work.key)}</p><span class="tag ${work.status === '已上架' ? 'green' : work.status === '待发布' ? 'gold' : 'teal'}">${esc(work.status)}</span></div><div class="work-updated"><b>${esc(work.updated)}</b><small>${complianceButton(work.license)}</small></div><button class="expand-btn">${icon('chevron')}</button></div><div class="version-tree">${work.versions.map((version) => `<div class="version-row"><div><b>${esc(version.name)}</b><small>${esc(version.type)}</small></div><time>${esc(version.time)}</time><button class="btn ghost" data-version-detail="${work.id}:${version.id}">查看参数</button></div>`).join('')}</div></article>`;
+  return `<article class="card work-card ${state.openWorks[work.id] ? 'open' : ''}" data-work="${work.id}"><div class="work-summary" data-toggle-work="${work.id}"><input class="pick" type="checkbox" data-pick-work="${work.id}" ${state.selectedWorkIds.includes(work.id) ? 'checked' : ''}><div class="work-cover">${icon('music')}</div><div class="work-info"><h3>${esc(work.name)}</h3><p>${work.versions.length} 个版本 · ${SY.formatBpmText(work.bpm)} BPM · ${esc(work.key)}</p><span class="tag ${work.status === '已上架' ? 'green' : work.status === '待发布' ? 'gold' : 'teal'}">${esc(work.status)}</span></div><div class="work-updated"><b>${esc(work.updated)}</b><small>${complianceButton(work.license)}</small></div><button class="expand-btn">${icon('chevron')}</button></div><div class="version-tree">${work.versions.map((version) => `<div class="version-row"><div><b>${esc(version.name)}</b><small>${esc(version.type)}${version.exportPlan?.fileWritten ? ' · 已保存' : ''}</small></div><time>${esc(version.time)}</time><button class="btn ghost" data-play-version="${work.id}:${version.id}">${icon('play')}播放</button><button class="btn ghost" data-export-version="${work.id}:${version.id}">导出</button><button class="btn ghost" data-version-detail="${work.id}:${version.id}">查看参数</button></div>`).join('')}</div></article>`;
 }
 
 function renderRemote() {
@@ -692,13 +796,6 @@ function renderRemote() {
     <div class="safety-bar"><span>${icon('lock')}只接收授权指令</span><span>${icon('shield')}音频只在本地处理</span><span>${icon('clock')}操作都有日志</span></div>`);
 }
 function issueCommand(name, params = {}, target = '当前作品') {
-  if (!state.agentConnected) {
-    state.lastPayload = SY.buildStatusPayload({ command: name, progress: 0, state: 'error', message: '连接已关闭' });
-    audit('remote', name, '连接关闭', '未执行');
-    fail('offline');
-    if (state.page === 'remote') rerender();
-    return state.lastPayload;
-  }
   const decision = SY.evaluateCommand(name, params, { whitelist: state.whitelist, mode: state.remoteMode });
   state.lastPayload = decision.payload;
   if (!decision.ok) {
@@ -706,6 +803,13 @@ function issueCommand(name, params = {}, target = '当前作品') {
     fail('whitelist');
     if (state.page === 'remote') rerender();
     return decision.payload;
+  }
+  if (!state.agentConnected) {
+    state.lastPayload = SY.buildStatusPayload({ command: name, progress: 0, state: 'error', message: '连接已关闭' });
+    audit('remote', name, '连接关闭', '未执行');
+    fail('offline');
+    if (state.page === 'remote') rerender();
+    return state.lastPayload;
   }
   if (decision.needsConfirm) {
     state.pending.unshift({ id: uid(), type: name, target, params: decision.params, time: nowTime(), risk: decision.risk });
@@ -769,15 +873,15 @@ function renderSettings() {
 }
 function renderSettingsContent() {
   if (state.settingsTab === 'remote') {
-    return `<article class="card settings-card"><h3>远程调度</h3><p>模式切换只影响之后的新指令</p>${settingRow('Agent 连接', '关闭后不再接收指令，也不会打开入站端口', `<label class="toggle"><input type="checkbox" id="agentToggle" ${state.agentConnected ? 'checked' : ''}><i></i></label>`)}${settingRow('执行模式', '默认每条指令都要手动确认', `<select class="select" id="remoteMode"><option value="manual" ${state.remoteMode === 'manual' ? 'selected' : ''}>全手动确认</option><option value="risk" ${state.remoteMode === 'risk' ? 'selected' : ''}>仅高风险手动</option></select>`)}</article><article class="card settings-card"><h3>指令白名单</h3><p>只能开关预设指令，不能自己写一条新指令</p>${SY.COMMAND_DEFS.map((item) => settingRow(item.name, `${item.risk === 'low' ? '低风险' : '高风险'} · ${item.summary}`, `<label class="toggle"><input type="checkbox" data-whitelist="${item.name}" ${state.whitelist[item.name] ? 'checked' : ''}><i></i></label>`)).join('')}<div style="margin-top:12px"><button class="btn" data-open-audit>查看操作日志</button></div></article>`;
+    return `<article class="card settings-card"><h3>远程调度</h3><p>只有状态地址返回成功，才会显示已连接。本机不监听入站端口。</p>${settingRow('当前状态', state.agentConnected ? '状态地址已响应' : '未连接', `<span class="status ${state.agentConnected ? 'ok' : 'warn'}">${state.agentConnected ? '已连接' : '未连接'}</span>`)}${settingRow('HTTPS 状态地址', '只发送一次探测，不上传音频或歌词', `<input class="input" id="statusEndpoint" value="${esc(state.statusEndpoint)}" placeholder="https://...">`)}${settingRow('探测', '失败时保持未连接', `<button class="btn" data-test-connection>测试连接</button>`)}${settingRow('断开', '立即停止接收新指令', `<button class="btn" data-disconnect>断开</button>`)}${settingRow('执行模式', '默认每条指令都要手动确认', `<select class="select" id="remoteMode"><option value="manual" ${state.remoteMode === 'manual' ? 'selected' : ''}>全手动确认</option><option value="risk" ${state.remoteMode === 'risk' ? 'selected' : ''}>仅高风险手动</option></select>`)}</article><article class="card settings-card"><h3>指令白名单</h3><p>只能开关预设指令，不能自己写一条新指令</p>${SY.COMMAND_DEFS.map((item) => settingRow(item.name, `${item.risk === 'low' ? '低风险' : '高风险'} · ${item.summary}`, `<label class="toggle"><input type="checkbox" data-whitelist="${item.name}" ${state.whitelist[item.name] ? 'checked' : ''}><i></i></label>`)).join('')}<div style="margin-top:12px"><button class="btn" data-open-audit>查看操作日志</button></div></article>`;
   }
   if (state.settingsTab === 'audio') {
-    return `<article class="card settings-card"><h3>音频处理</h3><p>真实人声分离、重封装和水印弱化还没有接入</p>${settingRow('默认导出格式', '用于新建的自定义预设', `<select class="select" id="defaultFormat">${['WAV', 'FLAC', 'MP3'].map((item) => `<option ${state.defaultFormat === item ? 'selected' : ''}>${item}</option>`).join('')}</select>`)}${settingRow('默认响度', '自定义预设使用，三套内置预设保持自己的响度', `<select class="select" id="defaultLufs">${[-14, -12, -9].map((item) => `<option value="${item}" ${Number(state.defaultLufs) === item ? 'selected' : ''}>${item} LUFS</option>`).join('')}</select>`)}</article><article class="card settings-card"><h3>全局参数字典</h3><p>BPM ${SY.DICT.bpmDecimals} 位小数，匹配误差 ±${SY.DICT.bpmTolerance}。调性 ${SY.DICT.keys.length} 个。</p><div class="dict-pills">${SY.DICT.styles.map((item) => `<span class="tag gold">${item}</span>`).join('')}</div><div class="dict-pills" style="margin-top:8px">${SY.DICT.licenses.map((item) => `<span class="tag">${item}</span>`).join('')}</div></article>`;
+    return `<article class="card settings-card"><h3>音频处理</h3><p>本地合成、波形混入和 WAV 重写已可用。没有神经网络人声分离，也不附带 MP3 / FLAC 编码器。</p>${settingRow('默认导出格式', '用于新建的自定义预设', `<select class="select" id="defaultFormat">${['WAV', 'FLAC', 'MP3'].map((item) => `<option ${state.defaultFormat === item ? 'selected' : ''}>${item}</option>`).join('')}</select>`)}${settingRow('默认响度', '自定义预设使用，三套内置预设保持自己的响度', `<select class="select" id="defaultLufs">${[-14, -12, -9].map((item) => `<option value="${item}" ${Number(state.defaultLufs) === item ? 'selected' : ''}>${item} LUFS</option>`).join('')}</select>`)}</article><article class="card settings-card"><h3>全局参数字典</h3><p>BPM ${SY.DICT.bpmDecimals} 位小数，匹配误差 ±${SY.DICT.bpmTolerance}。调性 ${SY.DICT.keys.length} 个。</p><div class="dict-pills">${SY.DICT.styles.map((item) => `<span class="tag gold">${item}</span>`).join('')}</div><div class="dict-pills" style="margin-top:8px">${SY.DICT.licenses.map((item) => `<span class="tag">${item}</span>`).join('')}</div></article>`;
   }
   if (state.settingsTab === 'about') {
-    return `<article class="card settings-card"><h3>关于声屿</h3><p>个人本地音频智能创作工作台</p>${settingRow('版本', '当前本地构建', '<b>0.1.0</b>')}${settingRow('数据位置', '只保存在这台设备', '<span class="status ok">本机</span>')}${settingRow('音频引擎', '分离、检测、重封装与水印弱化', '<span class="status warn">尚未接入</span>')}${settingRow('网络', '界面不上传音频、歌词、模板或作品', '<span class="status ok">未传文件</span>')}</article>`;
+    return `<article class="card settings-card"><h3>关于声屿</h3><p>个人本地音频智能创作工作台</p>${settingRow('版本', '当前本地构建', '<b>0.2.0</b>')}${settingRow('数据位置', '只保存在这台设备', '<span class="status ok">本机</span>')}${settingRow('音频引擎', '可写 WAV，可播放，可选择保存位置', '<span class="status ok">本地</span>')}${settingRow('榜单', 'Apple Music 与 Deezer 公开文本', '<span class="status ok">不下载音频</span>')}${settingRow('网络', '界面不上传音频、歌词、模板或作品', '<span class="status ok">未传文件</span>')}</article>`;
   }
-  return `<article class="card settings-card"><h3>通用设置</h3><p>外观和导出偏好</p>${settingRow('界面主题', '浅色与深色使用同一套结构', `<div class="segmented"><button class="seg-btn ${state.theme === 'light' ? 'active' : ''}" data-theme-set="light">浅色</button><button class="seg-btn ${state.theme === 'dark' ? 'active' : ''}" data-theme-set="dark">深色</button></div>`)}${settingRow('默认导出位置', '不显示真实磁盘路径', '<input class="input" value="音乐/声屿导出" readonly>')}${settingRow('默认元数据模板', '清洗、Remix 和批量导出共用', `<select class="select" id="metaPick">${state.metadataTemplates.map((item) => `<option value="${item.id}" ${item.id === state.metadataTemplateId ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select>`)}</article>`;
+  return `<article class="card settings-card"><h3>通用设置</h3><p>外观和导出偏好</p>${settingRow('界面主题', '浅色与深色使用同一套结构', `<div class="segmented"><button class="seg-btn ${state.theme === 'light' ? 'active' : ''}" data-theme-set="light">浅色</button><button class="seg-btn ${state.theme === 'dark' ? 'active' : ''}" data-theme-set="dark">深色</button></div>`)}${settingRow('默认导出位置', '导出时弹出系统保存对话框', '<span class="status ok">由你选择</span>')}${settingRow('默认元数据模板', '清洗、Remix 和批量导出共用', `<select class="select" id="metaPick">${state.metadataTemplates.map((item) => `<option value="${item.id}" ${item.id === state.metadataTemplateId ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select>`)}</article>`;
 }
 function settingRow(name, desc, control) {
   return `<div class="setting-row"><div><b>${name}</b><small>${desc}</small></div><div>${control}</div></div>`;
@@ -875,7 +979,11 @@ function continueRisk() {
   if (!action) return;
   if (action.type === 'remix') runRemix();
   if (action.type === 'clean') runClean();
-  if (action.type === 'export') writeExportPlans(action.ids);
+  if (action.type === 'export' && action.versionId) {
+    const work = findWork(action.ids[0]);
+    const version = findVersion(work, action.versionId);
+    if (work && version) exportVersionFile(work, version);
+  } else if (action.type === 'export') writeExportPlans(action.ids);
 }
 function exportTargets(ids) {
   const works = state.works.filter((work) => ids.includes(work.id));
@@ -889,42 +997,229 @@ function exportTargets(ids) {
   }
   writeExportPlans(ids);
 }
-function writeExportPlans(ids) {
-  remember();
+async function writeExportPlans(ids) {
   const works = state.works.filter((work) => ids.includes(work.id));
-  works.forEach((work) => {
+  if (!works.length) return fail('empty');
+  remember();
+  const savedNames = [];
+  for (const work of works) {
     const version = work.versions[0];
-    if (!version) return;
-    version.exportPlan = makePlan(work.name);
-    version.snapshot = Object.assign({}, version.snapshot, { presetId: currentPreset().id, clean: state.clean.applyOnExport });
-  });
-  audit('local', '导出', `${works.map((work) => work.name).join('、')} · ${currentPreset().name}`, '已完成');
+    if (!version) continue;
+    const saved = await exportVersionFile(work, version);
+    if (saved?.ok) savedNames.push(saved.fileName);
+  }
+  audit('local', '导出', `${works.map((work) => work.name).join('、')} · ${currentPreset().name}`, savedNames.length ? '已完成' : '未写入');
   persist();
-  const error = SY.sanitizeError('engine');
-  notify(error.title, `${currentPreset().name}。${error.detail}`);
+  if (savedNames.length) notify('导出完成', savedNames.join('、'));
+  else toast('没有文件被保存', '可以再次选择保存位置');
+  if (state.page === 'works') rerender();
 }
 function saveTrendTemplate() {
-  const report = SY.chartReport(state.chartRange);
+  const summary = SY.summarize(state.chartEntries, state.chartRange);
+  if (!summary.ok) return toast('还没有可保存的榜单', '抓取成功后才能保存，不会把样例当成榜单');
+  const style = SY.assertStyle($('#trendStyle')?.value) || state.poetry.style;
+  const preset = SY.presetFor(style);
   remember();
   const item = {
     id: uid(),
     kind: 'creation',
-    name: `${report.style} · ${report.range}报`,
-    style: report.style,
-    bpm: SY.formatBpm(report.bpmPeak),
-    key: report.key,
+    name: `${style} · 公开榜`,
+    style,
+    bpm: preset.bpm,
+    key: preset.key,
     license: '自有版权',
-    desc: report.advice,
-    versions: [`v1 · 来自${report.range}榜样例`]
+    desc: `来自公开榜单文本。BPM ${SY.formatBpmText(preset.bpm)} 与 ${preset.key} 是风格预设，不是原曲检测。关键词：${summary.keywords.join('、') || '无'}`,
+    versions: ['v1 · 公开榜单文本']
   };
   state.templates.unshift(item);
   state.activeCreationId = item.id;
   state.poetry.style = item.style;
   audit('local', '保存创作模板', item.name, '已完成');
-  toast('已保存创作模板', `${item.name} · ${SY.formatBpmText(item.bpm)} BPM`);
+  toast('已保存创作模板', `${item.name} · 风格预设 ${SY.formatBpmText(item.bpm)} BPM`);
   state.dashView = 'home';
   state.libraryTab = 'creation';
   setPage('templates');
+}
+function desktop() { return window.shengyuDesktop || null; }
+function safeName(name, ext) {
+  const base = String(name || 'shengyu').replace(/[\\/:*?"<>|]/g, '').trim().slice(0, 40) || 'shengyu';
+  return `${base}.${ext}`;
+}
+function presetSeconds() {
+  const preset = currentPreset();
+  if (preset.id === 'douyin') return 60;
+  if (preset.id === 'car') return 24;
+  return 16;
+}
+async function rememberWav(id, bytes) {
+  wavStore.set(id, bytes);
+  try { await desktop()?.cacheAudio?.(id, bytes); } catch { /* 本次会话仍可播放 */ }
+  return bytes;
+}
+async function bytesFor(id) {
+  if (!id) return null;
+  if (wavStore.has(id)) return wavStore.get(id);
+  try {
+    const loaded = await desktop()?.loadCached?.(id);
+    if (loaded?.ok && loaded.bytes) {
+      const bytes = loaded.bytes instanceof Uint8Array ? loaded.bytes : new Uint8Array(loaded.bytes);
+      wavStore.set(id, bytes);
+      return bytes;
+    }
+  } catch { return null; }
+  return null;
+}
+function playBytes(bytes) {
+  if (!bytes?.byteLength) return toast('还没有可播放的音频', '请先生成或导入，再点播放');
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+  playUrl(url);
+}
+async function saveBytes(defaultName, bytes, kind) {
+  const api = desktop();
+  if (api?.saveFile) {
+    const result = await api.saveFile({ defaultName, bytes, kind: kind || 'wav' });
+    if (result?.canceled) return { ok: false, canceled: true };
+    if (!result?.ok) return { ok: false, message: '没有保存成功' };
+    return { ok: true, fileName: result.fileName, byteLength: result.byteLength };
+  }
+  const blob = new Blob([bytes], { type: kind === 'txt' ? 'text/plain;charset=utf-8' : 'audio/wav' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = defaultName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  return { ok: true, fileName: defaultName, byteLength: bytes.byteLength, via: 'download' };
+}
+async function materialize(spec) {
+  const source = spec.pcmId ? pcmStore.get(spec.pcmId) : null;
+  const rendered = SY.renderTrack({
+    bpm: spec.bpm,
+    key: spec.key,
+    style: spec.style,
+    seconds: spec.seconds || 12,
+    sampleRate: 22050,
+    source,
+    sourceBpm: spec.sourceBpm,
+    vocal: spec.vocal !== false,
+    watermark: spec.watermark === true,
+    clean: spec.clean !== false
+  });
+  const audioId = spec.audioId || uid();
+  await rememberWav(audioId, rendered.wav);
+  return { audioId, wav: rendered.wav, byteLength: rendered.wav.byteLength, duration: rendered.duration };
+}
+async function audioForVersion(work, version, seconds) {
+  const cached = await bytesFor(version.audioId);
+  if (cached) return { audioId: version.audioId, wav: cached };
+  const made = await materialize({
+    bpm: version.bpm || work.bpm,
+    key: version.key || work.key,
+    style: version.style || work.style,
+    seconds: seconds || 12,
+    pcmId: version.snapshot?.pcmId,
+    sourceBpm: version.snapshot?.sourceBpm,
+    vocal: version.snapshot?.options?.vocal !== false,
+    clean: Boolean(version.snapshot?.clean) || version.type === '清洗版',
+    watermark: Boolean(version.snapshot?.clean) && state.clean.items['wm-weaken'] !== false
+  });
+  version.audioId = made.audioId;
+  persist();
+  return made;
+}
+async function playVersion(workId, versionId) {
+  const work = findWork(workId);
+  const version = findVersion(work, versionId);
+  if (!work || !version) return;
+  const made = await audioForVersion(work, version, 12);
+  playBytes(made.wav);
+  toast('正在播放', version.name);
+}
+async function exportVersionFile(work, version) {
+  const preset = currentPreset();
+  const made = await materialize({
+    bpm: version.bpm || work.bpm,
+    key: version.key || work.key,
+    style: version.style || work.style,
+    seconds: presetSeconds(),
+    pcmId: version.snapshot?.pcmId || currentSource().id,
+    sourceBpm: version.snapshot?.sourceBpm || currentSource().bpm,
+    vocal: version.snapshot?.options?.vocal !== false,
+    clean: state.clean.applyOnExport,
+    watermark: state.clean.applyOnExport && state.clean.items['wm-weaken'] !== false
+  });
+  version.audioId = made.audioId;
+  const saved = await saveBytes(safeName(`${work.name}-${preset.name}`, 'wav'), made.wav, 'wav');
+  if (saved.canceled) {
+    toast('已取消保存', '作品库里的试听仍然可以播放');
+    return saved;
+  }
+  if (!saved.ok) {
+    toast('没有保存成功', '请再选一次保存位置');
+    return saved;
+  }
+  version.exportPlan = makePlan(work.name);
+  version.exportPlan.fileWritten = true;
+  version.exportPlan.fileName = saved.fileName;
+  version.exportPlan.byteLength = saved.byteLength;
+  version.exportPlan.note = '音频已写入所选文件';
+  version.snapshot = Object.assign({}, version.snapshot, { presetId: preset.id, clean: state.clean.applyOnExport });
+  return saved;
+}
+async function refreshCharts() {
+  if (state.chartStatus === 'loading') return;
+  state.chartStatus = 'loading';
+  state.chartError = '';
+  if (state.dashView === 'trend') rerender();
+  const api = desktop();
+  if (!api?.fetchCharts) {
+    state.chartStatus = 'error';
+    state.chartEntries = [];
+    state.chartError = '尚未抓到榜单。浏览器预览不能联网，请使用 Windows 安装包里的声屿再点抓取。';
+    if (state.dashView === 'trend') rerender();
+    return;
+  }
+  let result;
+  try {
+    result = await api.fetchCharts({ extraUrl: state.chartEndpoint });
+  } catch {
+    result = null;
+  }
+  if (!result?.ok || !result.entries?.length) {
+    state.chartStatus = 'error';
+    state.chartEntries = [];
+    state.chartError = result?.message || '尚未抓到榜单。请检查网络后重试。没有用样例填空。';
+    state.chartNote = '';
+  } else {
+    state.chartStatus = 'ready';
+    state.chartEntries = result.entries;
+    state.chartError = '';
+    state.chartNote = result.message || `已写入 ${result.entries.length} 首公开曲目`;
+    state.chartFetchedAt = result.fetchedAt || '';
+  }
+  persist();
+  if (state.dashView === 'trend') rerender();
+}
+async function testConnection() {
+  const url = String(state.statusEndpoint || '').trim();
+  state.agentConnected = false;
+  if (!url) {
+    toast('还没有状态地址', '未连通时不会显示已连接');
+    renderChrome();
+    return;
+  }
+  const api = desktop();
+  if (!api?.pingStatus) {
+    toast('预览不能外连', '请在 Windows 安装包里填写 https 状态地址');
+    renderChrome();
+    return;
+  }
+  const result = await api.pingStatus(url);
+  state.agentConnected = Boolean(result?.ok);
+  toast(result?.ok ? '状态地址有响应' : '没有连上', result?.message || '未连通时不会显示已连接');
+  renderChrome();
+  persist();
+  if (state.page === 'remote' || state.page === 'settings') rerender();
 }
 function playUrl(url) {
   if (!url) return toast('请重新导入后再听', '播放只在本次打开期间有效');
@@ -932,13 +1227,15 @@ function playUrl(url) {
   player = new Audio(url);
   player.play().catch(() => toast('暂时不能播放', '请重新选择本地文件后再试'));
 }
-function startPreview(templateId) {
+async function startPreview(templateId) {
   if (previewTimer) clearInterval(previewTimer);
   if (player) player.pause();
+  const template = state.templates.find((item) => item.id === templateId);
+  if (!template) return;
   state.preview = { templateId, left: 15 };
-  const file = state.uploaded.find((item) => item.url);
-  if (file?.url) playUrl(file.url);
-  toast('开始 15 秒试听', '没有生成预览文件');
+  const rendered = SY.renderTrack({ bpm: template.bpm, key: template.key, style: template.style, seconds: 15, sampleRate: 22050, clean: true });
+  playBytes(rendered.wav);
+  toast('开始 15 秒试听', '这一段只在内存里播放，结束后不留文件');
   previewTimer = setInterval(() => {
     if (!state.preview) return;
     state.preview.left -= 1;
@@ -1003,7 +1300,73 @@ document.addEventListener('click', (event) => {
   }
   const play = hit('[data-play-file]');
   if (play) { playUrl(state.uploaded[Number(play.dataset.playFile)]?.url); return; }
-  if (hit('[data-play-source]')) { playUrl(state.uploaded[0]?.url); return; }
+  if (hit('[data-play-source]')) {
+    const source = state.uploaded[0];
+    if (source?.url) playUrl(source.url);
+    else playVersion(state.works.find((item) => item.name === sourceName())?.id, state.works.find((item) => item.name === sourceName())?.versions[0]?.id);
+    return;
+  }
+  const playDemo = hit('[data-play-demo]');
+  if (playDemo) {
+    const demo = state.demos.find((item) => item.id === playDemo.dataset.playDemo);
+    if (!demo) return;
+    materialize({ audioId: demo.audioId, bpm: demo.bpm, key: demo.key, style: demo.style, seconds: 12 }).then((made) => {
+      demo.audioId = made.audioId;
+      playBytes(made.wav);
+      toast('正在播放 Demo', demo.title);
+    });
+    return;
+  }
+  if (hit('[data-rewrite-lyric]')) {
+    const seed = ($('#lyricSeed')?.value || state.lyricSeed).trim();
+    if (!seed) return toast('先写一句原句', '仿写只在本机完成');
+    state.lyricSeed = seed.slice(0, 80);
+    const draft = SY.rewriteLyric({ seed: state.lyricSeed, density: state.poetry.density, style: state.poetry.style, source: state.poetry.source });
+    draft.overlap = Math.round(overlapAgainst(draft.text, draft.title) * 100);
+    state.lyricDraft = draft;
+    toast(draft.overlap >= state.overlapThreshold ? '仿写完成，重合度偏高' : '仿写完成', '还没有离开这台设备');
+    rerender();
+    return;
+  }
+  if (hit('[data-export-lyric]')) {
+    if (!state.lyricDraft) return fail('empty');
+    const text = `${state.lyricDraft.title}\n${state.lyricDraft.text}\n`;
+    saveBytes(safeName(state.lyricDraft.title, 'txt'), new TextEncoder().encode(text), 'txt').then((saved) => {
+      if (saved.canceled) toast('已取消保存', '歌词还在页面上');
+      else if (saved.ok) {
+        audit('local', '导出歌词', state.lyricDraft.title, '已完成');
+        toast('歌词已保存', saved.fileName);
+      } else toast('没有保存成功', '请再选一次位置');
+    });
+    return;
+  }
+  if (hit('[data-accept-lyric]')) {
+    if (!state.lyricDraft) return fail('empty');
+    const draft = state.lyricDraft;
+    const preset = SY.presetFor(draft.style);
+    materialize({ bpm: preset.bpm, key: preset.key, style: draft.style, seconds: 12 }).then((made) => {
+      remember();
+      const version = {
+        id: uid(),
+        audioId: made.audioId,
+        name: SY.versionDisplayName(draft.title, '仿写Demo'),
+        type: '仿写Demo',
+        time: `今天 ${nowTime()}`,
+        license: '自有版权',
+        style: draft.style,
+        bpm: preset.bpm,
+        key: preset.key,
+        lyric: draft.text,
+        snapshot: { summary: `本地仿写 / ${draft.style} / 文言密度 ${state.poetry.density}%`, clean: true }
+      };
+      const attached = SY.attachVersion(state.works, draft.title, version);
+      state.openWorks[attached.work.id] = true;
+      audit('local', '歌词仿写', draft.title, '已完成');
+      toast('仿写已写入作品', '可以在作品库播放');
+      setPage('works');
+    });
+    return;
+  }
   const choice = hit('[data-demo-choice]');
   if (choice) { chooseDemo(choice.dataset.id, choice.dataset.demoChoice); return; }
   if (hit('[data-generate-demos],[data-more-demos]')) { generateDemos(); return; }
@@ -1017,8 +1380,21 @@ document.addEventListener('click', (event) => {
       const version = work?.versions.find((item) => item.id === demo.versionId);
       if (version) version.exportPlan = makePlan(demo.title);
     });
-    audit('local', '批量导出', chosen.map((demo) => demo.title).join('、'), '已完成');
-    fail('engine');
+    (async () => {
+      const savedNames = [];
+      for (const demo of chosen) {
+        await ensureDemoVersion(demo);
+        const work = state.works.find((item) => item.name === demo.title);
+        const version = work?.versions.find((item) => item.id === demo.versionId);
+        if (!work || !version) continue;
+        const saved = await exportVersionFile(work, version);
+        if (saved?.ok) savedNames.push(saved.fileName);
+      }
+      audit('local', '批量导出', chosen.map((demo) => demo.title).join('、'), savedNames.length ? '已完成' : '未写入');
+      persist();
+      if (savedNames.length) notify('Demo 已保存', savedNames.join('、'));
+      else toast('没有文件被保存', '可以再次导出');
+    })();
     return;
   }
   const compliance = hit('[data-compliance]');
@@ -1048,6 +1424,85 @@ document.addEventListener('click', (event) => {
   const chartRange = hit('[data-chart-range]');
   if (chartRange) { state.chartRange = chartRange.dataset.chartRange; rerender(); return; }
   if (hit('[data-save-trend]')) { saveTrendTemplate(); return; }
+  if (hit('[data-refresh-charts]')) { state.chartEndpoint = ($('#chartEndpoint')?.value || '').trim().slice(0, 200); refreshCharts(); return; }
+  const chartStyle = hit('[data-chart-style]');
+  if (chartStyle) { state.chartStyle = chartStyle.dataset.chartStyle; rerender(); return; }
+  const cloneEntry = hit('[data-clone-entry]');
+  if (cloneEntry) {
+    const entry = SY.filterByStyle(state.chartEntries, state.chartStyle)[Number(cloneEntry.dataset.cloneEntry)];
+    if (!entry) return;
+    const style = entry.style || (SY.assertStyle(state.chartStyle) ? state.chartStyle : null);
+    if (!style) return toast('这首还不能复刻', '公开信息里没有可映射的风格。请先选定一个风格再点。');
+    const preset = SY.presetFor(style);
+    materialize({ bpm: preset.bpm, key: preset.key, style, seconds: 12, clean: true }).then((made) => {
+      remember();
+      const title = String(entry.title).slice(0, 20);
+      const version = {
+        id: uid(),
+        audioId: made.audioId,
+        name: SY.versionDisplayName(title, SY.TYPE_BY_STYLE[style] || style),
+        type: '复刻Demo',
+        time: `今天 ${nowTime()}`,
+        license: '自有版权',
+        style,
+        bpm: preset.bpm,
+        key: preset.key,
+        snapshot: { summary: `复刻 ${entry.artist} / ${style} / 风格预设 ${SY.formatBpmText(preset.bpm)} BPM。未下载原曲。`, clean: true }
+      };
+      const attached = SY.attachVersion(state.works, title, version);
+      state.openWorks[attached.work.id] = true;
+      audit('local', '一键复刻', title, '已完成');
+      toast('已生成可播放复刻', 'BPM 来自风格预设，没有下载原曲');
+      setPage('works');
+    });
+    return;
+  }
+  const applyTemplate = hit('[data-apply-template]');
+  if (applyTemplate) {
+    const template = state.templates.find((item) => item.id === applyTemplate.dataset.applyTemplate);
+    if (!template) return;
+    remember();
+    if (template.kind === 'creation') {
+      state.activeCreationId = template.id;
+      state.poetry.style = template.style;
+      state.audioTab = 'create';
+      toast('已应用到创作中心', template.name);
+    } else {
+      state.selectedTemplates = [template.id];
+      state.audioTab = 'remix';
+      toast('已应用到 Remix', `${template.name} · ${SY.formatBpmText(template.bpm)} BPM`);
+    }
+    setPage('audio');
+    return;
+  }
+  const playVersionBtn = hit('[data-play-version]');
+  if (playVersionBtn) {
+    const [workId, versionId] = playVersionBtn.dataset.playVersion.split(':');
+    playVersion(workId, versionId);
+    return;
+  }
+  const exportVersionBtn = hit('[data-export-version]');
+  if (exportVersionBtn) {
+    const [workId, versionId] = exportVersionBtn.dataset.exportVersion.split(':');
+    const work = findWork(workId);
+    const version = findVersion(work, versionId);
+    if (!work || !version) return;
+    const decision = SY.exportDecision([version.license || work.license]);
+    if (decision.blocked) {
+      state.pendingAction = { type: 'export', ids: [workId], versionId };
+      const error = SY.sanitizeError('copyright');
+      openModal(`<div class="modal-icon">${icon('shield')}</div><h2>${esc(error.title)}</h2><p>${esc(error.detail)}</p><div class="modal-actions"><button class="btn" data-modal-close>取消</button><button class="btn danger" data-risk-continue>知悉风险，继续</button></div>`);
+      return;
+    }
+    exportVersionFile(work, version).then((saved) => {
+      if (saved?.ok) {
+        audit('local', '导出', `${work.name} · ${saved.fileName}`, '已完成');
+        notify('已保存音频', saved.fileName);
+        persist();
+      }
+    });
+    return;
+  }
   const libraryTab = hit('[data-library-tab]');
   if (libraryTab) { state.libraryTab = libraryTab.dataset.libraryTab; rerender(); return; }
   if (hit('[data-toggle-filters]')) { state.filtersOpen = !state.filtersOpen; rerender(); return; }
@@ -1056,7 +1511,7 @@ document.addEventListener('click', (event) => {
   const templateDetail = hit('[data-template-detail]');
   if (templateDetail) { showTemplateDetail(templateDetail.dataset.templateDetail); return; }
   const workToggle = hit('[data-toggle-work]');
-  if (workToggle && !hit('input, label, [data-compliance]')) {
+  if (workToggle && !hit('input, label, button, a, [data-compliance]')) {
     const id = workToggle.dataset.toggleWork;
     state.openWorks[id] = !state.openWorks[id];
     workToggle.closest('.work-card').classList.toggle('open', Boolean(state.openWorks[id]));
@@ -1120,12 +1575,18 @@ document.addEventListener('click', (event) => {
     const version = findVersion(work, versionId);
     const decision = SY.exportDecision([version?.license || work?.license]);
     if (decision.blocked) {
-      state.pendingAction = { type: 'export', ids: [workId] };
+      state.pendingAction = { type: 'export', ids: [workId], versionId };
       const error = SY.sanitizeError('copyright');
       openModal(`<div class="modal-icon">${icon('shield')}</div><h2>${esc(error.title)}</h2><p>${esc(error.detail)}</p><div class="modal-actions"><button class="btn" data-modal-close>取消</button><button class="btn danger" data-risk-continue>知悉风险，继续</button></div>`);
       return;
     }
-    writeExportPlans([workId]);
+    exportVersionFile(work, version).then((saved) => {
+      if (saved?.ok) {
+        audit('local', '导出', `${work.name} · ${saved.fileName}`, '已完成');
+        notify('已保存音频', saved.fileName);
+        persist();
+      }
+    });
     return;
   }
   const loadSnap = hit('[data-load-snapshot]');
@@ -1215,6 +1676,19 @@ document.addEventListener('click', (event) => {
   const themeSet = hit('[data-theme-set]');
   if (themeSet) { setTheme(themeSet.dataset.themeSet); rerender(); return; }
   if (hit('[data-open-audit]')) { showAudit(); return; }
+  if (hit('[data-test-connection]')) {
+    state.statusEndpoint = ($('#statusEndpoint')?.value || '').trim().slice(0, 200);
+    testConnection();
+    return;
+  }
+  if (hit('[data-disconnect]')) {
+    state.agentConnected = false;
+    toast('已断开', '未连通时不会显示已连接');
+    renderChrome();
+    persist();
+    rerender();
+    return;
+  }
   if (hit('[data-modal-close]')) { closeModal(); return; }
   if (hit('[data-close-drawer]')) { closeDrawer(); return; }
 });
@@ -1250,6 +1724,7 @@ document.addEventListener('input', (event) => {
     const grid = $('#libraryGrid');
     if (grid) grid.innerHTML = renderLibraryCards(filteredTemplates());
   }
+  if (event.target.id === 'lyricSeed') state.lyricSeed = event.target.value.slice(0, 80);
   if (['artistInput', 'albumInput', 'copyrightInput'].includes(event.target.id)) saveMetaFromInputs();
   if (event.target.id === 'materialTitles' || event.target.id === 'materialIntro') {
     const workId = $('.drawer .btn.primary')?.dataset?.exportWork?.split(':')[0];
@@ -1297,12 +1772,8 @@ document.addEventListener('change', (event) => {
     renderChrome();
     persist();
   }
-  if (event.target.id === 'agentToggle') {
-    state.agentConnected = event.target.checked;
-    toast(state.agentConnected ? '连接已打开' : '连接已关闭', '仍然不会监听入站端口');
-    renderChrome();
-    persist();
-  }
+  if (event.target.id === 'statusEndpoint') state.statusEndpoint = event.target.value.trim().slice(0, 200);
+  if (event.target.id === 'chartEndpoint') state.chartEndpoint = event.target.value.trim().slice(0, 200);
   if (event.target.matches('[data-whitelist]')) {
     state.whitelist[event.target.dataset.whitelist] = event.target.checked;
     toast('白名单已更新', event.target.checked ? '这条指令可以接收' : '这条指令会被拦截');
@@ -1367,7 +1838,7 @@ window.Shengyu = {
       pending: state.pending.length,
       styles: SY.DICT.styles.slice(),
       keyCount: SY.DICT.keys.length,
-      fileWritten: false
+      fileWritten: state.works.some((work) => work.versions.some((version) => version.exportPlan?.fileWritten))
     };
   },
   blockProbe() { return issueCommand('读取文件', { path: 'C:\\Users\\me\\secret.wav', lyric: '不应出现' }); }
