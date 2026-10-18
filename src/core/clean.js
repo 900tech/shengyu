@@ -17,15 +17,15 @@
     { id: 'struct-edge', layer: 'structure', label: '头尾冗余', detail: '文件头尾多余数据块' },
     { id: 'struct-pad', layer: 'structure', label: '填充字节', detail: '对齐填充' },
     { id: 'struct-stego', layer: 'structure', label: '帧间隐写', detail: '检测帧间隙异常数据' },
-    { id: 'struct-pack', layer: 'structure', label: '重新封装', detail: '消除编码器独有封装特征，需本地引擎' },
+    { id: 'struct-pack', layer: 'structure', label: '重新封装', detail: '导出时重写为只含波形数据的 WAV' },
     { id: 'wm-detect', layer: 'acoustic', label: '水印检测', detail: '给出频谱提示与风险等级' },
-    { id: 'wm-weaken', layer: 'acoustic', label: '水印弱化', detail: '仅记录方案，浏览器不改写音频' }
+    { id: 'wm-weaken', layer: 'acoustic', label: '水印弱化', detail: '约 0.5% 变速后重写，成片仍可播放' }
   ]);
 
   const LAYERS = Object.freeze([
     { id: 'tags', name: '标签层', sub: 'ID3 / INFO / Vorbis / iTunes' },
     { id: 'structure', name: '结构层', sub: '冗余块、隐写与封装指纹' },
-    { id: 'acoustic', name: '声学层', sub: '检测优先，不在此版本改写音频' }
+    { id: 'acoustic', name: '声学层', sub: '轻度变速，导出的 WAV 仍可播放' }
   ]);
 
   function createCleanConfig() {

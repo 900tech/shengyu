@@ -3,6 +3,7 @@ name: Windows 构建与冒烟
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 jobs:

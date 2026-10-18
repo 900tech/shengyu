@@ -7,5 +7,10 @@ contextBridge.exposeInMainWorld('shengyuDesktop', {
       body: String(body || '').slice(0, 180)
     });
   },
-  version: () => ipcRenderer.invoke('version')
+  version: () => ipcRenderer.invoke('version'),
+  saveFile: (payload) => ipcRenderer.invoke('save-file', payload),
+  cacheAudio: (id, bytes) => ipcRenderer.invoke('cache-audio', { id, bytes }),
+  loadCached: (id) => ipcRenderer.invoke('load-cached', id),
+  fetchCharts: (options) => ipcRenderer.invoke('fetch-charts', options || {}),
+  pingStatus: (url) => ipcRenderer.invoke('ping-status', url)
 });

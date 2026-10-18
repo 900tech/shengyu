@@ -87,14 +87,15 @@
     };
   }
 
-  function buildExportPlan({ preset, cleanConfig, metadata, workName, apply = true }) {
+  function buildExportPlan({ preset, cleanConfig, metadata, workName, apply = true, fileWritten = false, fileName = '', byteLength = 0 }) {
     const summary = clean.cleanSummary(cleanConfig);
     const applied = apply !== false;
+    const written = fileWritten === true && Number(byteLength) > 44;
     return {
       workName: String(workName || '').slice(0, 40),
       presetId: preset.id,
       presetName: preset.name,
-      format: preset.format,
+      format: 'WAV',
       quality: preset.quality,
       duration: preset.duration,
       lufs: preset.lufs,
@@ -108,8 +109,10 @@
         album: String(metadata.album || '').slice(0, 40),
         copyright: String(metadata.copyright || '').slice(0, 80)
       },
-      fileWritten: false,
-      note: '方案已保存。当前版本不会生成音频文件。'
+      fileWritten: written,
+      fileName: written ? String(fileName || '').slice(0, 80) : '',
+      byteLength: written ? Number(byteLength) : 0,
+      note: written ? '音频已写入所选文件' : '尚未写入文件'
     };
   }
 
@@ -135,26 +138,35 @@
     };
   }
 
-  function chartReport(range) {
+  function chartReport(range, entries) {
     const month = range === 'month';
+    const list = Array.isArray(entries) ? entries : [];
+    if (!list.length) {
+      return {
+        ok: false,
+        fake: false,
+        networked: false,
+        range: month ? '月' : '周',
+        message: '尚未抓到榜单。失败时不会用样例歌曲填空。',
+        weights: { apple: 0.7, deezer: 0.3 },
+        key: null,
+        style: null,
+        bpmPeak: null,
+        keywords: []
+      };
+    }
+    const style = list.find((item) => dict.assertStyle(item.style))?.style || null;
     return {
-      source: '本地样例',
-      networked: false,
+      ok: true,
+      fake: false,
+      networked: true,
       range: month ? '月' : '周',
-      weights: { qishui: 0.7, netease: 0.3 },
-      bpm: month ? [128, 138] : [130, 136],
-      bpmPeak: month ? 134 : 132,
-      keys: month ? ['A 小调', 'D 小调', 'E 小调'] : ['D 小调', 'A 小调'],
-      duration: month ? '2:40–3:30' : '2:50–3:20',
-      structure: month ? '30秒高潮占比上升' : '副歌前置占比 68%',
-      hookAt: month ? '00:31' : '00:27',
-      keywords: ['月', '江', '灯', '归', '长安'],
-      tags: ['国风DJ', '车载', '夜路'],
-      trendStyle: '国风电子',
-      trendDelta: month ? 11.2 : 18.4,
-      advice: '笛声引子，8 拍 Build，副歌前置，然后短 Drop。',
-      style: '国风电子',
-      key: 'A 小调'
+      message: '',
+      weights: { apple: 0.7, deezer: 0.3 },
+      key: null,
+      style,
+      bpmPeak: null,
+      keywords: []
     };
   }
 
@@ -164,7 +176,9 @@
     { id: 't3', kind: 'accompaniment', name: '公路低频', style: '车载弹跳', bpm: 136.0, key: 'G 小调', license: '商用授权', desc: '弹性低频 · 简短前奏 · 车载响度', versions: ['v1 · 初始导入'] },
     { id: 't4', kind: 'accompaniment', name: '霜月硬鼓', style: '卡点硬鼓', bpm: 140.0, key: 'F# 小调', license: '不可商用', desc: '重拍卡点 · 8 拍 Build · 短 Drop', versions: ['v1 · 初始导入'] },
     { id: 't5', kind: 'accompaniment', name: '烟雨慢摇', style: '慢摇Remix', bpm: 118.0, key: 'C 小调', license: '自有版权', desc: '柔和鼓组 · 人声留白 · 长尾氛围', versions: ['v2 · 留白加长', 'v1 · 初始导入'] },
-    { id: 't6', kind: 'accompaniment', name: '破阵国潮', style: '国风DJ', bpm: 134.0, key: 'E 小调', license: '商用授权', desc: '战鼓采样 · 副歌双叠', versions: ['v1 · 初始导入'] }
+    { id: 't6', kind: 'accompaniment', name: '破阵国潮', style: '国风DJ', bpm: 134.0, key: 'E 小调', license: '商用授权', desc: '战鼓采样 · 副歌双叠', versions: ['v1 · 初始导入'] },
+    { id: 'c1', kind: 'creation', name: '夜路副歌前置', style: '国风DJ', bpm: 132.0, key: 'D 小调', license: '自有版权', desc: '8 拍内进入副歌，适合直接套到创作中心', versions: ['v1 · 内置'] },
+    { id: 'c2', kind: 'creation', name: '车载低频', style: '车载弹跳', bpm: 136.0, key: 'G 小调', license: '商用授权', desc: '低频靠前，适合完整时长导出', versions: ['v1 · 内置'] }
   ];
 
   const SEED_WORKS = [
