@@ -1,0 +1,64 @@
+{
+  "name": "shengyu",
+  "productName": "Shengyu",
+  "version": "0.1.0",
+  "private": true,
+  "description": "声屿 · 个人本地音频智能创作工作台",
+  "main": "electron/main.js",
+  "author": "Shengyu",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "preview": "node scripts/preview-server.js",
+    "test": "node --test tests/core.test.js",
+    "smoke": "node tests/browser-smoke.js",
+    "build:win": "electron-builder --win nsis portable --publish never"
+  },
+  "devDependencies": {
+    "electron": "33.2.1",
+    "electron-builder": "25.1.8",
+    "puppeteer-core": "23.10.4"
+  },
+  "build": {
+    "appId": "studio.shengyu.local",
+    "productName": "Shengyu",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "index.html",
+      "styles.css",
+      "app.js",
+      "src/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "signAndEditExecutable": false,
+      "executableName": "Shengyu"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Shengyu",
+      "artifactName": "Shengyu-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Shengyu-Portable-${version}.${ext}"
+    }
+  }
+}
